@@ -57,9 +57,9 @@ type ProcessTreer interface {
 var _ Spawnable = (*Process)(nil)
 var gSpawnCounter = int64(0)
 
-func nextSwawnName(givenName string) (string, int64) {
+func nextSwawnName(baseName string) (string, int64) {
 	pid := atomic.AddInt64(&gSpawnCounter, 1)
-	return name + " #" + strconv.FormatInt(pid, 10), pid
+	return baseName + " #" + strconv.FormatInt(pid, 10), pid
 }
 
 func New(name string) *Process {
