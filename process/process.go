@@ -20,13 +20,9 @@ type Process struct {
 	goroutines map[*goroutine]struct{}
 
 	closeOnce   sync.Once
-	doneOnce    sync.Once
 	chStop      chan struct{}
 	chDone      chan struct{}
-	chAutoclose chan struct{}
 	wg          sync.WaitGroup
-
-	debug bool
 }
 
 var _ Interface = (*Process)(nil)
