@@ -4,7 +4,6 @@ go 1.16
 
 require (
 	github.com/brynbellomy/klog v0.0.0-20200414031930-87fbf2e555ae
-	github.com/dgrijalva/jwt-go v3.2.0+incompatible
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/pkg/errors v0.9.1
 	github.com/rs/cors v1.8.0

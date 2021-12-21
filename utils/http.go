@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
 	"github.com/rs/cors"
 
 	"github.com/planet5d/go-cedar/errors"
@@ -126,32 +125,6 @@ func unmarshalHTTPRequestField(name, value string, fieldVal reflect.Value) error
 		return nil
 	}
 	panic(fmt.Sprintf(`cannot unmarshal http.Request into struct field "%v" of type %T`, name, fieldVal.Type()))
-}
-
-func ParseJWT(authHeader string, jwtSecret []byte) (jwt.MapClaims, bool, error) {
-	if authHeader == "" {
-		return nil, false, nil
-	}
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return nil, false, errors.Errorf("bad Authorization header")
-	}
-
-	jwtToken := strings.TrimSpace(authHeader[len("Bearer "):])
-
-	token, err := jwt.Parse(jwtToken, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.Errorf("Unexpected signing method: %v", token.Header["alg"])
-		}
-		return jwtSecret, nil
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok || !token.Valid {
-		return nil, false, errors.Errorf("invalid jwt token")
-	}
-	return claims, true, nil
 }
 
 func RespondJSON(resp http.ResponseWriter, data interface{}) {
