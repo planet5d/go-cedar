@@ -4,11 +4,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/planet5d/go-cedar/bufs"
 	"github.com/planet5d/go-cedar/errors"
+)
+
+var (
+	// DefaultDirPerms expresses the default mode of dir creation.
+	DefaultDirPerms = os.FileMode(0755)
 )
 
 // EnsureDirAndMaxPerms ensures that the given path exists, that it's a directory,
@@ -105,8 +113,8 @@ type FileSize uint64
 var fsregex = regexp.MustCompile(`(\d+\.?\d*)(tb|gb|mb|kb|b)?`)
 
 const (
-	KB FileSize = 1000
-	MB FileSize = 1000 * KB
+	KB FileSize = 1024
+	MB FileSize = 1000000
 	GB FileSize = 1000 * MB
 	TB FileSize = 1000 * GB
 )
@@ -166,4 +174,130 @@ func (s *FileSize) UnmarshalText(bs []byte) error {
 func (s FileSize) String() string {
 	str, _ := s.MarshalText()
 	return string(str)
+}
+
+// ExpandAndCheckPath parses/expands the given path and then verifies it's existence or non-existence,
+// depending on autoCreate and returning the the expanded path.
+//
+// If autoCreate == true, an error is returned if the dir didn't exist and failed to be created.
+//
+// If autoCreate == false, an error is returned if the dir doesn't exist.
+func ExpandAndCheckPath(
+	pathname string,
+	autoCreate bool,
+) (string, error) {
+
+	var err error
+	if err != nil {
+		err = errors.Errorf("error expanding '%s'", pathname)
+	} else {
+		_, err = os.Stat(pathname)
+		if err != nil && os.IsNotExist(err) {
+			if autoCreate {
+				err = os.MkdirAll(pathname, DefaultDirPerms)
+			} else {
+				err = errors.Errorf("path '%s' does not exist", pathname)
+			}
+		}
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	return pathname, nil
+}
+
+// CreateNewDir creates the specified dir (and returns an error if the dir already exists)
+//
+// If dirPath is absolute then basePath is ignored.
+// Returns the effective pathname.
+func CreateNewDir(basePath, dirPath string) (string, error) {
+	var pathname string
+
+	if path.IsAbs(dirPath) {
+		pathname = dirPath
+	} else {
+		pathname = path.Join(basePath, dirPath)
+	}
+
+	if _, err := os.Stat(pathname); !os.IsNotExist(err) {
+		return "", errors.Errorf("for safety, the path '%s' must not already exist", pathname)
+	}
+
+	if err := os.MkdirAll(pathname, DefaultDirPerms); err != nil {
+		return "", err
+	}
+
+	return pathname, nil
+}
+
+// GetExePath returns the pathname of the dir containing the host exe
+func GetExePath() (string, error) {
+	hostExe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	hostDir := path.Dir(hostExe)
+	return hostDir, nil
+}
+
+var remapCharset = map[rune]rune{
+	' ':  '-',
+	'.':  '-',
+	'?':  '-',
+	'\\': '+',
+	'/':  '+',
+	'&':  '+',
+}
+
+// MakeFSFriendly makes a given string safe to use for a file system.
+// If suffix is given, the hex encoding of those bytes are appended after a space.
+func MakeFSFriendly(name string, suffix []byte) string {
+
+	var b strings.Builder
+	for _, r := range name {
+		if replace, ok := remapCharset[r]; ok {
+			if replace != 0 {
+				b.WriteRune(replace)
+			}
+		} else {
+			b.WriteRune(r)
+		}
+	}
+
+	if len(suffix) > 0 {
+		b.WriteString(" ")
+		b.WriteString(bufs.Base32Encoding.EncodeToString(suffix))
+	}
+
+	friendlyName := b.String()
+	return friendlyName
+}
+
+// CreateTemp creates a temporary file with the given file mode flags using the given name pattern.
+// The name pattern should contain a '*' to where a random alphanumeric should go.
+func CreateTemp(dir, pattern string, fileFlags int) (ofile *os.File, err error) {
+	if dir == "" {
+		dir = os.TempDir()
+	}
+
+	var prefix, suffix string
+	if pos := strings.LastIndexByte(pattern, '*'); pos != -1 {
+		prefix, suffix = pattern[:pos], pattern[pos+1:]
+	} else {
+		prefix = pattern
+	}
+	prefix = path.Join(dir, prefix)
+
+	for {
+		msec := time.Now().UnixMicro()
+		name := prefix + strconv.FormatInt(int64(msec), 32) + suffix
+		ofile, err = os.OpenFile(name, os.O_CREATE|fileFlags, 0600)
+		if os.IsExist(err) {
+			continue
+		}
+		break
+	}
+	return
 }
