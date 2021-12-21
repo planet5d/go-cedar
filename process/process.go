@@ -3,7 +3,9 @@ package process
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/planet5d/go-cedar/log"
 	"github.com/planet5d/go-cedar/utils"
@@ -12,6 +14,7 @@ import (
 type Process struct {
 	log.Logger
 
+	id       int64
 	name     string
 	mu       sync.RWMutex
 	children map[Spawnable]struct{}
@@ -19,10 +22,10 @@ type Process struct {
 
 	goroutines map[*goroutine]struct{}
 
-	closeOnce   sync.Once
-	chStop      chan struct{}
-	chDone      chan struct{}
-	wg          sync.WaitGroup
+	closeOnce sync.Once
+	chStop    chan struct{}
+	chDone    chan struct{}
+	wg        sync.WaitGroup
 }
 
 var _ Interface = (*Process)(nil)
@@ -30,6 +33,7 @@ var _ Interface = (*Process)(nil)
 type Interface interface {
 	Spawnable
 	ProcessTreer
+	ID() int64
 	Autoclose()
 	AutocloseWithCleanup(closeFn func())
 	Ctx() context.Context
@@ -51,17 +55,27 @@ type ProcessTreer interface {
 }
 
 var _ Spawnable = (*Process)(nil)
+var gSpawnCounter = int64(0)
+
+func nextSwawnName(givenName string) (string, int64) {
+	pid := atomic.AddInt64(&gSpawnCounter, 1)
+	return name + " #" + strconv.FormatInt(pid, 10), pid
+}
 
 func New(name string) *Process {
-	name = name + " #" + utils.RandomNumberString()
-	return &Process{
-		name:       name,
+	p := &Process{
 		children:   make(map[Spawnable]struct{}),
 		goroutines: make(map[*goroutine]struct{}),
 		chStop:     make(chan struct{}),
 		chDone:     make(chan struct{}),
 		Logger:     log.NewLogger(""),
 	}
+	p.name, p.id = nextSwawnName(name)
+	return p
+}
+
+func (p *Process) ID() int64 {
+	return p.id
 }
 
 func (p *Process) Start() error {
@@ -129,11 +143,7 @@ func (p *Process) ProcessTree() map[string]interface{} {
 
 	children := make(map[string]interface{}, len(p.children))
 	for child := range p.children {
-		if child, is := child.(ProcessTreer); is {
-			children[child.Name()] = child.ProcessTree()
-		} else {
-			children[child.Name()] = nil
-		}
+		children[child.Name()], _ = child.(ProcessTreer)
 	}
 	return map[string]interface{}{
 		"status":     p.state.String(),
@@ -208,7 +218,10 @@ func (p *Process) Go(ctx context.Context, name string, fn func(ctx context.Conte
 		return ch
 	}
 
-	g := &goroutine{name: name + " #" + utils.RandomNumberString(), chDone: make(chan struct{})}
+	g := &goroutine{
+		chDone: make(chan struct{}),
+	}
+	g.name, _ = nextSwawnName(name)
 	p.goroutines[g] = struct{}{}
 
 	p.wg.Add(1)
