@@ -2,6 +2,7 @@ package process_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,14 +12,21 @@ import (
 	"github.com/planet5d/go-cedar/testutils"
 )
 
+func spawnN(p *process.Process, numGoroutines int, delay time.Duration) {
+	for i := 0; i < numGoroutines; i++ {
+		name := fmt.Sprintf("#%d", i+1)
+		p.Go(nil, name, func(ctx context.Context) {
+			time.Sleep(delay)
+		})
+	}
+}
+
 func TestProcess(t *testing.T) {
 	t.Run("it does a thing", func(t *testing.T) {
 		p := process.New("")
 		p.Start()
 
-		p.Go(nil, "foo", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		p.Go(nil, "bar", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		p.Go(nil, "baz", func(ctx context.Context) { time.Sleep(1 * time.Second) })
+		spawnN(p, 3, 1*time.Second)
 
 		p.Autoclose()
 
@@ -34,9 +42,7 @@ func TestProcess(t *testing.T) {
 
 		p.Start()
 
-		p.Go(nil, "foo", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		p.Go(nil, "bar", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		p.Go(nil, "baz", func(ctx context.Context) { time.Sleep(1 * time.Second) })
+		spawnN(p, 3, 1*time.Second)
 
 		select {
 		case <-time.After(5 * time.Second):
@@ -60,9 +66,7 @@ func TestProcess(t *testing.T) {
 
 		child := p.NewChild(context.Background(), "child")
 
-		child.Go(nil, "foo", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		child.Go(nil, "bar", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		child.Go(nil, "baz", func(ctx context.Context) { time.Sleep(1 * time.Second) })
+		spawnN(p, 3, 1*time.Second)
 
 		child.Autoclose()
 
@@ -80,9 +84,7 @@ func TestProcess(t *testing.T) {
 
 		child := p.NewChild(context.Background(), "child")
 
-		child.Go(nil, "foo", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		child.Go(nil, "bar", func(ctx context.Context) { time.Sleep(1 * time.Second) })
-		child.Go(nil, "baz", func(ctx context.Context) { time.Sleep(1 * time.Second) })
+		spawnN(p, 3, 1*time.Second)
 
 		select {
 		case <-time.After(5 * time.Second):
