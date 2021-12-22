@@ -31,6 +31,7 @@ type Process struct {
 var _ Interface = (*Process)(nil)
 
 type Interface interface {
+	InitProcess(name string)
 	Spawnable
 	ProcessTreer
 	ID() int64
@@ -62,15 +63,18 @@ func nextSwawnName(baseName string) (string, int64) {
 	return baseName + " #" + strconv.FormatInt(pid, 10), pid
 }
 
-func New(name string) *Process {
-	p := &Process{
-		children:   make(map[Spawnable]struct{}),
-		goroutines: make(map[*goroutine]struct{}),
-		chStop:     make(chan struct{}),
-		chDone:     make(chan struct{}),
-		Logger:     log.NewLogger(""),
-	}
+func (p *Process) InitProcess(name string) {
 	p.name, p.id = nextSwawnName(name)
+	p.children = make(map[Spawnable]struct{})
+	p.goroutines = make(map[*goroutine]struct{})
+	p.chStop = make(chan struct{})
+	p.chDone = make(chan struct{})
+	p.Logger = log.NewLogger(p.name)
+}
+
+func New(name string) *Process {
+	p := &Process{}
+	p.InitProcess(name)
 	return p
 }
 
@@ -164,28 +168,22 @@ var (
 )
 
 func (p *Process) SpawnChild(ctx context.Context, child Spawnable) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.state != Started {
-		return nil
+		return ErrUnstarted
 	}
 
 	err := child.Start()
 	if err != nil {
 		return err
 	}
+	
+	p.mu.Lock()
 	p.children[child] = struct{}{}
-
+	p.mu.Unlock()
+	
 	p.wg.Add(1)
 	go func() {
-		defer func() {
-			p.wg.Done()
-			p.mu.Lock()
-			delete(p.children, child)
-			p.mu.Unlock()
-		}()
-
+		// If given a Context, use that as a stop signal too
 		var ctxDone <-chan struct{}
 		if ctx != nil {
 			ctxDone = ctx.Done()
@@ -198,6 +196,11 @@ func (p *Process) SpawnChild(ctx context.Context, child Spawnable) error {
 			child.Close()
 		case <-child.Done():
 		}
+		
+		p.wg.Done()
+		p.mu.Lock()
+		delete(p.children, child)
+		p.mu.Unlock()
 	}()
 
 	return nil
