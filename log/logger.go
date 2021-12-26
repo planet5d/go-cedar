@@ -2,7 +2,11 @@ package log
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/brynbellomy/klog"
 )
@@ -276,4 +280,46 @@ func (l *logger) Fatalf(inFormat string, args ...interface{}) {
 			klog.FatalDepth(1, fmt.Sprintf(inFormat, args...))
 		}
 	}
+}
+
+func AwaitInterrupt() (
+	first <-chan struct{},
+	repeated <-chan struct{},
+) {
+	onFirst := make(chan struct{})
+	onRepeated := make(chan struct{})
+
+	go func() {
+		sigInbox := make(chan os.Signal, 1)
+
+		signal.Notify(sigInbox, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+
+		count := 0
+		firstTime := int64(0)
+
+		for sig := range sigInbox {
+			count++
+			curTime := time.Now().Unix()
+
+			// Prevent un-terminated ^c character in terminal
+			fmt.Println()
+
+			klog.WarningDepth(1, "\nReceived interrupt ", sig.String(), "\n")
+
+			if onFirst != nil {
+				firstTime = curTime
+				close(onFirst)
+				onFirst = nil
+			} else if onRepeated != nil {
+				if curTime > firstTime+3 && count >= 3 {
+					klog.WarningDepth(1, "\nReceived repeated interrupts\n")
+					klog.Flush()
+					close(onRepeated)
+					onRepeated = nil
+				}
+			}
+		}
+	}()
+
+	return onFirst, onRepeated
 }
