@@ -58,8 +58,8 @@ func (p *Pool) Start() error {
 	if err != nil {
 		return err
 	}
-	p.Process.Go(nil, "deliverAvailableItems", p.deliverAvailableItems)
-	p.Process.Go(nil, "handleItemsAwaitingRetry", p.handleItemsAwaitingRetry)
+	p.Process.Go("deliverAvailableItems", p.deliverAvailableItems)
+	p.Process.Go("handleItemsAwaitingRetry", p.handleItemsAwaitingRetry)
 	return nil
 }
 
@@ -116,7 +116,7 @@ func (p *Pool) Get(ctx context.Context) (item interface{}, err error) {
 	}
 }
 
-func (p *Pool) deliverAvailableItems(ctx context.Context) {
+func (p *Pool) deliverAvailableItems(ctx Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -150,7 +150,6 @@ func (p *Pool) setState(id PoolUniqueID, state poolItemState, retryWhen time.Tim
 	entry, exists := p.poolItems[id]
 	if !exists {
 		panic(fmt.Sprintf("(%T) %v", id, id))
-		return
 	}
 	entry.state = state
 	entry.retryWhen = retryWhen
@@ -171,7 +170,6 @@ func (p *Pool) ForceRetry(id PoolUniqueID) {
 	entry, exists := p.poolItems[id]
 	if !exists {
 		panic(fmt.Sprintf("(%T) %v", id, id))
-		return
 	}
 
 	switch entry.state {
@@ -191,7 +189,7 @@ func (p *Pool) Complete(id PoolUniqueID) {
 	p.sem.Release(1)
 }
 
-func (p *Pool) handleItemsAwaitingRetry(ctx context.Context) {
+func (p *Pool) handleItemsAwaitingRetry(ctx Context) {
 	ticker := time.NewTicker(p.retryInterval)
 	for {
 		select {

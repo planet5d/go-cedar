@@ -1,8 +1,6 @@
 package process
 
 import (
-	"context"
-
 	"github.com/planet5d/go-cedar/utils"
 )
 
@@ -10,10 +8,10 @@ type PeriodicTask struct {
 	Process
 	ticker  utils.Ticker
 	mailbox *utils.Mailbox
-	taskFn  func(ctx context.Context)
+	taskFn  func(ctx Context)
 }
 
-func NewPeriodicTask(name string, ticker utils.Ticker, taskFn func(ctx context.Context)) *PeriodicTask {
+func NewPeriodicTask(name string, ticker utils.Ticker, taskFn func(ctx Context)) *PeriodicTask {
 	return &PeriodicTask{
 		Process: *New(name),
 		ticker:  ticker,
@@ -29,7 +27,7 @@ func (task *PeriodicTask) Start() error {
 	}
 	task.ticker.Start()
 
-	task.Process.Go(nil, "ticker", func(ctx context.Context) {
+	task.Process.Go("ticker", func(ctx Context) {
 	Loop:
 		for {
 			select {

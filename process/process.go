@@ -3,9 +3,11 @@ package process
 import (
 	"context"
 	"errors"
+	"io"
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/planet5d/go-cedar/log"
 	"github.com/planet5d/go-cedar/utils"
@@ -14,160 +16,250 @@ import (
 type Process struct {
 	log.Logger
 
-	id       int64
-	name     string
-	mu       sync.RWMutex
-	children map[Spawnable]struct{}
-	state    State
-
-	goroutines map[*goroutine]struct{}
-
+	id        int64
+	state     State
+	name      string
 	closeOnce sync.Once
-	chStop    chan struct{}
-	chDone    chan struct{}
-	wg        sync.WaitGroup
+	chClosing chan struct{} // signals Close() has been called and close execution has begun.
+	chClosed  chan struct{} // signals Close() has been called and all close execution is done.
+	err       error         // See context.Err() for spec
+
+	mu       sync.Mutex
+	children map[Context]struct{}
+	wg       sync.WaitGroup // blocks until child count is 0
+
 }
 
-var _ Interface = (*Process)(nil)
+var NilContext = context.Context(nil)
 
-type Interface interface {
-	InitProcess(name string)
-	Spawnable
-	ProcessTreer
-	ID() int64
-	Autoclose()
-	AutocloseWithCleanup(closeFn func())
-	Ctx() context.Context
-	NewChild(ctx context.Context, name string) *Process
-	SpawnChild(ctx context.Context, child Spawnable) error
-	Go(ctx context.Context, name string, fn func(ctx context.Context)) <-chan struct{}
-}
+var _ Context = (*Process)(nil)
 
-type Spawnable interface {
+type Context interface {
+
+	// A process.Context can be used just like a context.Context, cowgirl.
+	context.Context
+
+	// A guaranteed unique name derived from the given name.
 	Name() string
+
+	// A guaranteed unique ID assigned after Start() is called.
+	ID() int64
+
+	// Returns a tree reflecting the current state for debugging and diagnostics.
+	ExportProcessTree() map[string]interface{}
+
+	// Starts this process context.
+	// Panics if this process has already been started.
 	Start() error
-	Close() error
+
+	// Returns the number of children currently running (that are started or are closing),
+	// Since this count can change at any time, the caller must take precautions as needed.
+	ChildCount() int
+
+	// Calls Start() and then adds the given child to this Process.
+	// startFn is an optional fcn that
+	StartChild(child Context) error
+
+	// Convenience function for StartChild() that makes a new Process wrapper around the given fn and starts it.
+	// This newly started child Process is passed to the fn as well as returned for arbitrary access.
+	//
+	// If fn == nil, this is equivalent to:
+	//      child := new(Process).InitProcess(name)
+	//      p.StartChild(child)
+	//      child.Autoclose()
+	Go(name string, fn func(ctx Context)) Context
+
+	// Initiates process shutdown and causes all childen's Close() to be called.
+	// Close can be called multiple times asynchronously (thanks to an internal sync.Once guard)
+	// First, child processes get Close() if applicable.
+	// After all children are done closing, OnClosing(), then OnClosed() are executed.
+	Close()
+
+	// Automatically calls Close() when this Process has no more child processes.
+	// Warning: this can only be used when a ptr to the process is NOT retained.  Otherwise, there would be an unavoidable race condition between close detection and updating the ptr.
+	Autoclose()
+
+	// Callback when Close() is first called and when children are signaled to exit.
+	// NOTE: This is always called from within Close() and should never be called explicitly.
+	OnClosing()
+
+	// Callback when during Close() after all children have completed Close() (but immediately before Done() is released)
+	// NOTE: This is always called from within Close() and should never be called explicitly.
+	OnClosed()
+
+	// Signals when Close() has been called.
+	// First, Child processes get Close(),  then OnClosing, then OnClosed are executing
+	Closing() <-chan struct{}
+
+	// Signals when Close() has fully executed, no children remain, and OnClosed() has been completed.
 	Done() <-chan struct{}
 }
 
-type ProcessTreer interface {
-	Spawnable
-	ProcessTree() map[string]interface{}
-}
+// Errors
+var (
+	ErrUnstarted = errors.New("unstarted")
+	ErrClosed    = errors.New("closed")
+)
 
-var _ Spawnable = (*Process)(nil)
 var gSpawnCounter = int64(0)
 
-func nextSwawnName(baseName string) (string, int64) {
+func nextProcessName(baseName string) (string, int64) {
 	pid := atomic.AddInt64(&gSpawnCounter, 1)
 	return baseName + " #" + strconv.FormatInt(pid, 10), pid
 }
 
-func (p *Process) InitProcess(name string) {
-	p.name, p.id = nextSwawnName(name)
-	p.children = make(map[Spawnable]struct{})
-	p.goroutines = make(map[*goroutine]struct{})
-	p.chStop = make(chan struct{})
-	p.chDone = make(chan struct{})
-	p.Logger = log.NewLogger(p.name)
+func (p *Process) ProcessInit(name string) {
+	*p = Process{}
+	p.name = name
+	p.state = Unstarted
 }
 
 func New(name string) *Process {
 	p := &Process{}
-	p.InitProcess(name)
+	p.ProcessInit(name)
 	return p
 }
 
-func (p *Process) ID() int64 {
-	return p.id
+func (p *Process) OnClosing() {
+	// Intended for client override
 }
 
-func (p *Process) Start() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.state != Unstarted {
-		panic("already started")
-	}
-	p.state = Started
-
-	return nil
+func (p *Process) OnClosed() {
+	// Intended for client override
 }
 
-func (p *Process) Close() error {
+func (p *Process) Close() {
 	p.closeOnce.Do(func() {
-		func() {
-			p.mu.Lock()
-			defer p.mu.Unlock()
+		if p.state != Started {
+			panic("not started")
+		}
 
-			if p.state != Started {
-				panic("not started")
-			}
-			p.state = Closed
-		}()
+		// Signal that a Close() has been ordered, causing all children receive a Close()
+		p.state = Closing
+		close(p.chClosing)
 
-		close(p.chStop)
+		// Callback while we wait for children
+		p.OnClosing()
+
+		// Wait for all children to close, then we proceed with completion.
 		p.wg.Wait()
-		close(p.chDone)
+		p.state = Closed
+		p.OnClosed()
+		close(p.chClosed)
 	})
+}
+
+func (p *Process) Deadline() (deadline time.Time, ok bool) {
+	return time.Time{}, false
+}
+
+func (p *Process) Err() error {
+	select {
+	case <-p.Done():
+		if p.err == nil {
+			return context.Canceled
+		}
+		return p.err
+	default:
+		return nil
+	}
+}
+
+func (p *Process) Value(key interface{}) interface{} {
 	return nil
 }
 
 func (p *Process) Autoclose() {
 	go func() {
 		p.wg.Wait()
+
+		/*
+			prevSeed := int64(-1)
+			for checkSubs := true; checkSubs; {
+				p.wg.Wait()
+
+				// If no delay given, proceed to immediately Close.
+				if delay <= 0 {
+					break
+				}
+
+				ticker := time.NewTicker(delay)
+				select {
+				case <-ticker.C:
+					// The first time around, checkSubs is guaranteed to be true
+					curSeed := p.seed
+					checkSubs = p.seed != prevSeed
+					prevSeed = curSeed
+				case <-p.Closing():
+					checkSubs = false
+				}
+				ticker.Stop()
+			}
+		*/
+
 		p.Close()
 	}()
 }
 
-func (p *Process) AutocloseWithCleanup(closeFn func()) {
-	go func() {
-		p.wg.Wait()
-		closeFn()
-		p.Close()
-	}()
+func (p *Process) ID() int64 {
+	return p.id
 }
 
 func (p *Process) Name() string {
 	return p.name
 }
 
-func (p *Process) Ctx() context.Context {
-	return utils.ChanContext(p.chStop)
+func (p *Process) Start() error {
+	if p.state != Unstarted {
+		panic("already started")
+	}
+	p.name, p.id = nextProcessName(p.name)
+	p.chClosing = make(chan struct{})
+	p.chClosed = make(chan struct{})
+	p.Logger = log.NewLogger(p.name)
+	p.state = Started
+	return nil
 }
 
-func (p *Process) ProcessTree() map[string]interface{} {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+// Writes pretty debug state info of a given verbosity level.
+// If out == nil, the text output is instead directed to this context's logger.Info()
+func (p *Process) PrintProcessTree(out io.Writer, verboseLevel int32) {
+	tree := p.ExportProcessTree()
+	txt := utils.PrettyJSON(tree)
 
-	var goroutines []string
-	for goroutine := range p.goroutines {
-		goroutines = append(goroutines, goroutine.name)
-	}
-
-	children := make(map[string]interface{}, len(p.children))
-	for child := range p.children {
-		children[child.Name()], _ = child.(ProcessTreer)
-	}
-	return map[string]interface{}{
-		"status":     p.state.String(),
-		"goroutines": goroutines,
-		"children":   children,
+	if out != nil {
+		out.Write([]byte(txt))
+	} else {
+		p.Info(verboseLevel, txt)
 	}
 }
 
-func (p *Process) NewChild(ctx context.Context, name string) *Process {
-	child := New(name)
-	_ = p.SpawnChild(ctx, child)
-	return child
+func (p *Process) ExportProcessTree() map[string]interface{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	treeNode := make(map[string]interface{}, 3)
+	treeNode["id"] = p.id
+	treeNode["status"] = p.state.String()
+	if len(p.children) > 0 {
+		children := make(map[string]interface{}, len(p.children))
+		treeNode["children"] = children
+		for child := range p.children {
+			children[child.Name()] = child.ExportProcessTree()
+		}
+	}
+
+	return treeNode
 }
 
-var (
-	ErrUnstarted = errors.New("unstarted")
-	ErrClosed    = errors.New("closed")
-)
+func (p *Process) ChildCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.children)
+}
 
-func (p *Process) SpawnChild(ctx context.Context, child Spawnable) error {
+// StartChild() starts the given child (in the current thread) and then adds it as a child process.
+func (p *Process) StartChild(child Context) error {
 	if p.state != Started {
 		return ErrUnstarted
 	}
@@ -176,27 +268,22 @@ func (p *Process) SpawnChild(ctx context.Context, child Spawnable) error {
 	if err != nil {
 		return err
 	}
-	
+
 	p.mu.Lock()
+	if p.children == nil {
+		p.children = make(map[Context]struct{})
+	}
 	p.children[child] = struct{}{}
 	p.mu.Unlock()
-	
+
 	p.wg.Add(1)
 	go func() {
-		// If given a Context, use that as a stop signal too
-		var ctxDone <-chan struct{}
-		if ctx != nil {
-			ctxDone = ctx.Done()
-		}
-
 		select {
-		case <-p.chStop:
-			child.Close()
-		case <-ctxDone:
+		case <-p.Closing():
 			child.Close()
 		case <-child.Done():
 		}
-		
+
 		p.wg.Done()
 		p.mu.Lock()
 		delete(p.children, child)
@@ -206,55 +293,38 @@ func (p *Process) SpawnChild(ctx context.Context, child Spawnable) error {
 	return nil
 }
 
-type goroutine struct {
-	name   string
-	chDone chan struct{}
-}
-
-func (p *Process) Go(ctx context.Context, name string, fn func(ctx context.Context)) <-chan struct{} {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
+func (p *Process) Go(name string, fn func(ctx Context)) Context {
 	if p.state != Started {
-		ch := make(chan struct{})
-		close(ch)
-		return ch
+		return nil
 	}
 
-	g := &goroutine{
-		chDone: make(chan struct{}),
-	}
-	g.name, _ = nextSwawnName(name)
-	p.goroutines[g] = struct{}{}
+	child := &Process{}
+	child.ProcessInit(name)
 
-	p.wg.Add(1)
+	p.StartChild(child)
+
 	go func() {
-		defer func() {
-			p.wg.Done()
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			delete(p.goroutines, g)
-			close(g.chDone)
-		}()
-
-		ctx, cancel := utils.CombinedContext(ctx, p.chStop)
-		defer cancel()
-
-		fn(ctx)
+		fn(child)
+		child.Close()
 	}()
 
-	return g.chDone
+	return child
+}
+
+func (p *Process) Closing() <-chan struct{} {
+	return p.chClosing
 }
 
 func (p *Process) Done() <-chan struct{} {
-	return p.chDone
+	return p.chClosed
 }
 
-type State int
+type State int32
 
 const (
 	Unstarted State = iota
 	Started
+	Closing
 	Closed
 )
 
@@ -264,6 +334,8 @@ func (s State) String() string {
 		return "unstarted"
 	case Started:
 		return "started"
+	case Closing:
+		return "closing"
 	case Closed:
 		return "closed"
 	default:

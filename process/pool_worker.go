@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"go.uber.org/multierr"
 )
 
 type PoolWorker interface {
-	Interface
+	Context
 	Add(item PoolWorkerItem)
 	ForceRetry(uniqueID PoolUniqueID)
 }
@@ -46,13 +44,13 @@ func (w *poolWorker) Start() error {
 		return err
 	}
 
-	err = w.Process.SpawnChild(nil, w.pool)
+	err = w.Process.StartChild(w.pool)
 	if err != nil {
 		return err
 	}
 
 	for i := uint64(0); i < w.concurrency; i++ {
-		w.Process.Go(nil, fmt.Sprintf("worker %v", i), func(ctx context.Context) {
+		w.Process.Go(fmt.Sprintf("worker %v", i), func(ctx Context) {
 			for {
 				select {
 				case <-ctx.Done():
@@ -78,11 +76,9 @@ func (w *poolWorker) Start() error {
 	return nil
 }
 
-func (w *poolWorker) Close() error {
-	return multierr.Append(
-		w.Process.Close(),
-		w.pool.Close(),
-	)
+func (w *poolWorker) Close() {
+	w.Process.Close()
+	w.pool.Close()
 }
 
 func (w *poolWorker) Add(item PoolWorkerItem) {

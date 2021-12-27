@@ -1,7 +1,6 @@
 package process_test
 
 import (
-	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -12,11 +11,13 @@ import (
 	"github.com/planet5d/go-cedar/testutils"
 )
 
-func spawnN(p *process.Process, numGoroutines int, delay time.Duration) {
+func spawnN(p process.Context, numGoroutines int, delay time.Duration) {
 	for i := 0; i < numGoroutines; i++ {
 		name := fmt.Sprintf("#%d", i+1)
-		p.Go(nil, name, func(ctx context.Context) {
+		p.Go(name, func(ctx process.Context) {
 			time.Sleep(delay)
+			yoyo := delay
+			fmt.Print(yoyo)
 		})
 	}
 }
@@ -39,7 +40,6 @@ func TestProcess(t *testing.T) {
 
 	t.Run("it does a thing", func(t *testing.T) {
 		p := process.New("")
-
 		p.Start()
 
 		spawnN(p, 3, 1*time.Second)
@@ -64,9 +64,9 @@ func TestProcess(t *testing.T) {
 		p.Start()
 		defer p.Close()
 
-		child := p.NewChild(context.Background(), "child")
-
-		spawnN(p, 3, 1*time.Second)
+		child := process.New("child")
+		p.StartChild(child)
+		spawnN(child, 3, 1*time.Second)
 
 		child.Autoclose()
 
@@ -82,9 +82,9 @@ func TestProcess(t *testing.T) {
 		p.Start()
 		defer p.Close()
 
-		child := p.NewChild(context.Background(), "child")
-
-		spawnN(p, 3, 1*time.Second)
+		child := process.New("child")
+		p.StartChild(child)
+		spawnN(child, 3, 1*time.Second)
 
 		select {
 		case <-time.After(5 * time.Second):
@@ -105,28 +105,29 @@ func TestProcess(t *testing.T) {
 		p := process.New("")
 		p.Start()
 
-		child := p.NewChild(context.Background(), "child")
+		child := process.New("child")
+		p.StartChild(child)
 
 		canceled1 := testutils.NewAwaiter()
 		canceled2 := testutils.NewAwaiter()
 
-		chDone1 := p.Go(nil, "foo", func(ctx context.Context) {
+		chDone1 := p.Go("foo", func(ctx process.Context) {
 			select {
-			case <-ctx.Done():
+			case <-ctx.Closing():
 				canceled1.ItHappened()
 			case <-time.After(5 * time.Second):
 				t.Fatal("context wasn't canceled")
 			}
-		})
+		}).Done()
 
-		chDone2 := child.Go(nil, "foo", func(ctx context.Context) {
+		chDone2 := child.Go("foo", func(ctx process.Context) {
 			select {
-			case <-ctx.Done():
+			case <-ctx.Closing():
 				canceled2.ItHappened()
 			case <-time.After(5 * time.Second):
 				t.Fatal("context wasn't canceled")
 			}
-		})
+		}).Done()
 
 		requireDone(t, p.Done(), false)
 		requireDone(t, child.Done(), false)
