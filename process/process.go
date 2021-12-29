@@ -294,14 +294,13 @@ func (p *Process) StartChild(child Context) error {
 }
 
 func (p *Process) Go(name string, fn func(ctx Context)) Context {
-	if p.state != Started {
-		return nil
-	}
-
 	child := &Process{}
 	child.ProcessInit(name)
 
-	p.StartChild(child)
+	err := p.StartChild(child)
+	if err != nil {
+		panic(err)
+	}
 
 	go func() {
 		fn(child)
