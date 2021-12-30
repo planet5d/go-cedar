@@ -20,14 +20,12 @@ type Process struct {
 	state     State
 	name      string
 	closeOnce sync.Once
-	chClosing chan struct{} // signals Close() has been called and close execution has begun.
-	chClosed  chan struct{} // signals Close() has been called and all close execution is done.
-	err       error         // See context.Err() for spec
-
-	mu       sync.Mutex
-	children map[Context]struct{}
-	wg       sync.WaitGroup // blocks until child count is 0
-
+	chClosing chan struct{}  // signals Close() has been called and close execution has begun.
+	chClosed  chan struct{}  // signals Close() has been called and all close execution is done.
+	err       error          // See context.Err() for spec
+	exec      sync.WaitGroup // blocks until all execution is complete
+	subsMu    sync.Mutex     // Locked when .subs is being accessed
+	subs      map[Context]struct{}
 }
 
 var NilContext = context.Context(nil)
@@ -142,7 +140,7 @@ func (p *Process) Close() {
 		p.OnClosing()
 
 		// Wait for all children to close, then we proceed with completion.
-		p.wg.Wait()
+		p.exec.Wait()
 		p.state = Closed
 		p.OnClosed()
 		close(p.chClosed)
@@ -171,7 +169,7 @@ func (p *Process) Value(key interface{}) interface{} {
 
 func (p *Process) Autoclose() {
 	go func() {
-		p.wg.Wait()
+		p.exec.Wait()
 
 		/*
 			prevSeed := int64(-1)
@@ -235,16 +233,16 @@ func (p *Process) PrintProcessTree(out io.Writer, verboseLevel int32) {
 }
 
 func (p *Process) ExportProcessTree() map[string]interface{} {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.subsMu.Lock()
+	defer p.subsMu.Unlock()
 
 	treeNode := make(map[string]interface{}, 3)
 	treeNode["id"] = p.id
 	treeNode["status"] = p.state.String()
-	if len(p.children) > 0 {
-		children := make(map[string]interface{}, len(p.children))
+	if len(p.subs) > 0 {
+		children := make(map[string]interface{}, len(p.subs))
 		treeNode["children"] = children
-		for child := range p.children {
+		for child := range p.subs {
 			children[child.Name()] = child.ExportProcessTree()
 		}
 	}
@@ -253,9 +251,9 @@ func (p *Process) ExportProcessTree() map[string]interface{} {
 }
 
 func (p *Process) ChildCount() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.children)
+	p.subsMu.Lock()
+	defer p.subsMu.Unlock()
+	return len(p.subs)
 }
 
 // StartChild() starts the given child (in the current thread) and then adds it as a child process.
@@ -269,14 +267,14 @@ func (p *Process) StartChild(child Context) error {
 		return err
 	}
 
-	p.mu.Lock()
-	if p.children == nil {
-		p.children = make(map[Context]struct{})
+	p.subsMu.Lock()
+	if p.subs == nil {
+		p.subs = make(map[Context]struct{})
 	}
-	p.children[child] = struct{}{}
-	p.mu.Unlock()
+	p.subs[child] = struct{}{}
+	p.subsMu.Unlock()
 
-	p.wg.Add(1)
+	p.exec.Add(1)
 	go func() {
 		select {
 		case <-p.Closing():
@@ -284,10 +282,10 @@ func (p *Process) StartChild(child Context) error {
 		case <-child.Done():
 		}
 
-		p.wg.Done()
-		p.mu.Lock()
-		delete(p.children, child)
-		p.mu.Unlock()
+		p.exec.Done()
+		p.subsMu.Lock()
+		delete(p.subs, child)
+		p.subsMu.Unlock()
 	}()
 
 	return nil
