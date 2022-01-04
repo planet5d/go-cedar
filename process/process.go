@@ -38,10 +38,10 @@ type Context interface {
 	context.Context
 
 	// A guaranteed unique name derived from the given name.
-	Name() string
+	ProcessName() string
 
 	// A guaranteed unique ID assigned after Start() is called.
-	ID() int64
+	ProcessID() int64
 
 	// Returns a tree reflecting the current state for debugging and diagnostics.
 	ExportProcessTree() map[string]interface{}
@@ -199,11 +199,11 @@ func (p *Process) Autoclose() {
 	}()
 }
 
-func (p *Process) ID() int64 {
+func (p *Process) ProcessID() int64 {
 	return p.id
 }
 
-func (p *Process) Name() string {
+func (p *Process) ProcessName() string {
 	return p.name
 }
 
@@ -243,7 +243,7 @@ func (p *Process) ExportProcessTree() map[string]interface{} {
 		children := make(map[string]interface{}, len(p.subs))
 		treeNode["children"] = children
 		for child := range p.subs {
-			children[child.Name()] = child.ExportProcessTree()
+			children[child.ProcessName()] = child.ExportProcessTree()
 		}
 	}
 
