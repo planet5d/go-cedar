@@ -16,6 +16,20 @@ func HashStr(str string) uint64 {
 	return uint64(memhash(ss.str, 0, uintptr(ss.len)))
 }
 
+// AP Hash Function -- deprecated in place of HashBuf.
+// https://www.partow.net/programming/hashfunctions/#AvailableHashFunctions
+func APHash64(buf []byte) uint64 {
+	var hash uint64 = 0xaaaaaaaaaaaaaaaa
+	for i, b := range buf {
+		if (i & 1) == 0 {
+			hash ^= ((hash << 7) ^ uint64(b) ^ (hash >> 3))
+		} else {
+			hash ^= (^((hash << 11) ^ uint64(b) ^ (hash >> 5)) + 1)
+		}
+	}
+	return hash
+}
+
 type stringStruct struct {
 	str unsafe.Pointer
 	len int
