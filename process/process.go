@@ -43,9 +43,6 @@ func (p *Process) OnClosed() {
 
 func (p *Process) Close() {
 	p.closeOnce.Do(func() {
-		if p.state != Started {
-			panic("not started")
-		}
 
 		// Signal that a Close() has been ordered, causing all children receive a Close()
 		p.state = Closing
@@ -55,7 +52,7 @@ func (p *Process) Close() {
 		p.OnClosing()
 
 		// Wait for all children to close, then we proceed with completion.
-		p.exec.Wait()
+		p.running.Wait()
 		p.state = Closed
 		p.OnClosed()
 		close(p.chClosed)
@@ -84,7 +81,7 @@ func (p *Process) Value(key interface{}) interface{} {
 
 func (p *Process) Autoclose() {
 	go func() {
-		p.exec.Wait()
+		p.running.Wait()
 
 		/*
 			prevSeed := int64(-1)
@@ -189,7 +186,7 @@ func (p *Process) StartChild(child Context) error {
 	p.subs[child] = struct{}{}
 	p.subsMu.Unlock()
 
-	p.exec.Add(1)
+	p.running.Add(1)
 	go func() {
 		select {
 		case <-p.Closing():
@@ -197,7 +194,7 @@ func (p *Process) StartChild(child Context) error {
 		case <-child.Done():
 		}
 
-		p.exec.Done()
+		p.running.Done()
 		p.subsMu.Lock()
 		delete(p.subs, child)
 		p.subsMu.Unlock()

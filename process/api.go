@@ -28,7 +28,7 @@ type Process struct {
 	chClosing chan struct{}  // signals Close() has been called and close execution has begun.
 	chClosed  chan struct{}  // signals Close() has been called and all close execution is done.
 	err       error          // See context.Err() for spec
-	exec      sync.WaitGroup // blocks until all execution is complete
+	running   sync.WaitGroup // blocks until all execution is complete
 	subsMu    sync.Mutex     // Locked when .subs is being accessed
 	subs      map[Context]struct{}
 }
