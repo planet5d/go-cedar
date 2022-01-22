@@ -30,7 +30,7 @@ type Process struct {
 	err       error          // See context.Err() for spec
 	running   sync.WaitGroup // blocks until all execution is complete
 	subsMu    sync.Mutex     // Locked when .subs is being accessed
-	subs      map[Context]struct{}
+	subs      []Context
 }
 
 // A Process implements all aspects of a process.Context
@@ -59,8 +59,8 @@ type Context interface {
 	// Since this count can change at any time, the caller must take precautions as needed.
 	ChildCount() int
 
-	// Calls Start() and then adds the given child to this Process.
-	// startFn is an optional fcn that
+	// Calls child.Start() and then adds the given child to this Process (if no error).
+	// If child.Start() returns an error, then child.Close() is called and the error is returned.
 	StartChild(child Context) error
 
 	// Convenience function for StartChild() that makes a new Process wrapper around the given fn and starts it.

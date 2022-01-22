@@ -154,7 +154,7 @@ func (p *Process) ExportProcessTree() map[string]interface{} {
 	if len(p.subs) > 0 {
 		children := make(map[string]interface{}, len(p.subs))
 		treeNode["children"] = children
-		for child := range p.subs {
+		for _, child := range p.subs {
 			children[child.ProcessName()] = child.ExportProcessTree()
 		}
 	}
@@ -176,14 +176,12 @@ func (p *Process) StartChild(child Context) error {
 
 	err := child.Start()
 	if err != nil {
+		child.Close()
 		return err
 	}
 
 	p.subsMu.Lock()
-	if p.subs == nil {
-		p.subs = make(map[Context]struct{})
-	}
-	p.subs[child] = struct{}{}
+	p.subs = append(p.subs, child)
 	p.subsMu.Unlock()
 
 	p.running.Add(1)
@@ -196,7 +194,17 @@ func (p *Process) StartChild(child Context) error {
 
 		p.running.Done()
 		p.subsMu.Lock()
-		delete(p.subs, child)
+		{ // Remove child from list of subs
+			N := len(p.subs)
+			for i := 0; i < N; i++ {
+				if p.subs[i] == child {
+					copy(p.subs[i:], p.subs[i+1:N])
+					N--
+					p.subs[N] = nil // ensure child can be GCed
+					p.subs = p.subs[:N]
+				}
+			}
+		}
 		p.subsMu.Unlock()
 	}()
 
