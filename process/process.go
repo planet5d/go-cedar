@@ -33,6 +33,10 @@ func (p *Process) ProcessInit(name string) {
 	p.state = Unstarted
 }
 
+func (p *Process) OnStart() error {
+	return nil // Intended for client override
+}
+
 func (p *Process) OnClosing() {
 	// Intended for client override
 }
@@ -119,7 +123,7 @@ func (p *Process) ProcessName() string {
 	return p.name
 }
 
-func (p *Process) Start() error {
+func (p *Process) start() {
 	if p.state != Unstarted {
 		panic("already started")
 	}
@@ -128,7 +132,6 @@ func (p *Process) Start() error {
 	p.chClosed = make(chan struct{})
 	p.Logger = log.NewLogger(p.name)
 	p.state = Started
-	return nil
 }
 
 // Writes pretty debug state info of a given verbosity level.
@@ -168,45 +171,56 @@ func (p *Process) ChildCount() int {
 	return len(p.subs)
 }
 
-// StartChild() starts the given child (in the current thread) and then adds it as a child process.
-func (p *Process) StartChild(child Context) error {
-	if p.state != Started {
-		return ErrUnstarted
-	}
+// Start() starts this Process as a child process to the given parent Context (if given).
+func (p *Process) Start(parent Context) error {
+	p.start()
 
-	err := child.Start()
-	if err != nil {
-		child.Close()
-		return err
-	}
+	// If a parent was given, add this Process as a child process
+	par, _ := parent.(*Process)
+	if par != nil {
 
-	p.subsMu.Lock()
-	p.subs = append(p.subs, child)
-	p.subsMu.Unlock()
-
-	p.running.Add(1)
-	go func() {
-		select {
-		case <-p.Closing():
-			child.Close()
-		case <-child.Done():
+		if par.state != Started {
+			return ErrUnstarted
 		}
 
-		p.running.Done()
-		p.subsMu.Lock()
-		{ // Remove child from list of subs
-			N := len(p.subs)
-			for i := 0; i < N; i++ {
-				if p.subs[i] == child {
-					copy(p.subs[i:], p.subs[i+1:N])
-					N--
-					p.subs[N] = nil // ensure child can be GCed
-					p.subs = p.subs[:N]
+		// add new child to parent
+		par.subsMu.Lock()
+		par.subs = append(par.subs, p)
+		par.subsMu.Unlock()
+
+		par.running.Add(1)
+		go func() {
+
+			// block until parent is closing or child has completed closing
+			select {
+			case <-par.Closing():
+				p.Close()
+			case <-p.Done():
+			}
+
+			// update the running count and remove the sub
+			par.running.Done()
+			par.subsMu.Lock()
+			{
+				N := len(par.subs)
+				for i := 0; i < N; i++ {
+					if par.subs[i] == p {
+						copy(par.subs[i:], par.subs[i+1:N])
+						N--
+						par.subs[N] = nil // show GC some love
+						par.subs = par.subs[:N]
+					}
 				}
 			}
-		}
-		p.subsMu.Unlock()
-	}()
+			par.subsMu.Unlock()
+		}()
+	}
+
+	err := p.OnStart()
+	if err != nil {
+		p.Close()
+		return err
+	}
 
 	return nil
 }
@@ -215,7 +229,7 @@ func (p *Process) Go(name string, fn func(ctx Context)) Context {
 	child := &Process{}
 	child.ProcessInit(name)
 
-	err := p.StartChild(child)
+	err := child.Start(p)
 	if err != nil {
 		panic(err)
 	}

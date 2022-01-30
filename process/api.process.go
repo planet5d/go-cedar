@@ -30,7 +30,7 @@ type Process struct {
 	err       error          // See context.Err() for spec
 	running   sync.WaitGroup // blocks until all execution is complete
 	subsMu    sync.Mutex     // Locked when .subs is being accessed
-	subs      []Context
+	subs      []*Process
 }
 
 // A Process implements all aspects of a process.Context
@@ -51,18 +51,20 @@ type Context interface {
 	// Returns a tree reflecting the current state for debugging and diagnostics.
 	ExportProcessTree() map[string]interface{}
 
-	// Starts this process context.
-	// Panics if this process has already been started.
-	Start() error
-
 	// Returns the number of children currently running (that are started or are closing),
 	// Since this count can change at any time, the caller must take precautions as needed.
 	ChildCount() int
+	
+	// Calls OnStart() and adds the given child to this Process (if no error).
+	// If OnStart() returns an error, then Close() is called and the error is returned.
+	// If parent == nil, this context is started with no parent (typical for "root" Contexts)
+	Start(parent Context) error
 
-	// Calls child.Start() and then adds the given child to this Process (if no error).
-	// If child.Start() returns an error, then child.Close() is called and the error is returned.
-	StartChild(child Context) error
-
+	// Callback when this Context is started, called during StartChild().
+	// This is indended for sub-impl override and is implemented by default as a stub. 
+	// If an error is returned, Context.Close() is immediately called and the error is returned from StartChild().
+	OnStart() error
+	
 	// Convenience function for StartChild() that makes a new Process wrapper around the given fn and starts it.
 	// This newly started child Process is passed to the fn as well as returned for arbitrary access.
 	//
@@ -83,10 +85,12 @@ type Context interface {
 	Autoclose()
 
 	// Callback when Close() is first called and when children are signaled to exit.
+	// This is indended for sub-impl override and is implemented by default as a stub. 
 	// NOTE: This is always called from within Close() and should never be called explicitly.
 	OnClosing()
 
 	// Callback when during Close() after all children have completed Close() (but immediately before Done() is released)
+	// This is indended for sub-impl override and is implemented by default as a stub. 
 	// NOTE: This is always called from within Close() and should never be called explicitly.
 	OnClosed()
 

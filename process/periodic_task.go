@@ -20,11 +20,7 @@ func NewPeriodicTask(name string, ticker utils.Ticker, taskFn func(ctx Context))
 	}
 }
 
-func (task *PeriodicTask) Start() error {
-	err := task.Process.Start()
-	if err != nil {
-		return err
-	}
+func (task *PeriodicTask) OnStart() error {
 	task.ticker.Start()
 
 	task.Process.Go("ticker", func(ctx Context) {

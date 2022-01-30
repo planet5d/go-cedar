@@ -24,12 +24,12 @@ type PoolWorkerScheduler interface {
 
 type poolWorker struct {
 	Process
-	concurrency uint64
+	concurrency int
 	pool        *Pool
 	scheduler   PoolWorkerScheduler
 }
 
-func NewPoolWorker(name string, concurrency uint64, scheduler PoolWorkerScheduler) *poolWorker {
+func NewPoolWorker(name string, concurrency int, scheduler PoolWorkerScheduler) *poolWorker {
 	return &poolWorker{
 		Process:     *New(name),
 		concurrency: concurrency,
@@ -38,18 +38,13 @@ func NewPoolWorker(name string, concurrency uint64, scheduler PoolWorkerSchedule
 	}
 }
 
-func (w *poolWorker) Start() error {
-	err := w.Process.Start()
+func (w *poolWorker) OnStart() error {
+	err := w.pool.Start(w)
 	if err != nil {
 		return err
 	}
 
-	err = w.Process.StartChild(w.pool)
-	if err != nil {
-		return err
-	}
-
-	for i := uint64(0); i < w.concurrency; i++ {
+	for i := 0; i < w.concurrency; i++ {
 		w.Process.Go(fmt.Sprintf("worker %v", i), func(ctx Context) {
 			for {
 				select {

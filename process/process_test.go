@@ -25,7 +25,7 @@ func spawnN(p process.Context, numGoroutines int, delay time.Duration) {
 func TestProcess(t *testing.T) {
 	t.Run("it does a thing", func(t *testing.T) {
 		p := process.New("")
-		p.Start()
+		p.Start(nil)
 
 		spawnN(p, 3, 1*time.Second)
 
@@ -40,7 +40,7 @@ func TestProcess(t *testing.T) {
 
 	t.Run("it does a thing", func(t *testing.T) {
 		p := process.New("")
-		p.Start()
+		p.Start(nil)
 
 		spawnN(p, 3, 1*time.Second)
 
@@ -61,11 +61,11 @@ func TestProcess(t *testing.T) {
 
 	t.Run("child", func(t *testing.T) {
 		p := process.New("")
-		p.Start()
+		p.Start(nil)
 		defer p.Close()
 
 		child := process.New("child")
-		p.StartChild(child)
+		child.Start(p)
 		spawnN(child, 3, 1*time.Second)
 
 		child.Autoclose()
@@ -79,11 +79,11 @@ func TestProcess(t *testing.T) {
 
 	t.Run("child", func(t *testing.T) {
 		p := process.New("")
-		p.Start()
+		p.Start(nil)
 		defer p.Close()
 
 		child := process.New("child")
-		p.StartChild(child)
+		child.Start(p)
 		spawnN(child, 3, 1*time.Second)
 
 		select {
@@ -103,10 +103,10 @@ func TestProcess(t *testing.T) {
 
 	t.Run(".Close cancels child contexts", func(t *testing.T) {
 		p := process.New("")
-		p.Start()
+		p.Start(nil)
 
 		child := process.New("child")
-		p.StartChild(child)
+		child.Start(p)
 
 		canceled1 := testutils.NewAwaiter()
 		canceled2 := testutils.NewAwaiter()

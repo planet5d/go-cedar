@@ -21,7 +21,7 @@ type Pool struct {
 	poolItemsMu    sync.RWMutex
 }
 
-func NewPool(name string, concurrency uint64, retryInterval time.Duration) *Pool {
+func NewPool(name string, concurrency int, retryInterval time.Duration) *Pool {
 	return &Pool{
 		Process:        *New(name),
 		itemsAvailable: utils.NewMailbox(1000),
@@ -53,11 +53,7 @@ const (
 	poolItemState_InRetryPool
 )
 
-func (p *Pool) Start() error {
-	err := p.Process.Start()
-	if err != nil {
-		return err
-	}
+func (p *Pool) OnStart() error {
 	p.Process.Go("deliverAvailableItems", p.deliverAvailableItems)
 	p.Process.Go("handleItemsAwaitingRetry", p.handleItemsAwaitingRetry)
 	return nil
