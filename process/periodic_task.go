@@ -13,7 +13,6 @@ type PeriodicTask struct {
 
 func NewPeriodicTask(name string, ticker utils.Ticker, taskFn func(ctx Context)) *PeriodicTask {
 	return &PeriodicTask{
-		Process: *New(name),
 		ticker:  ticker,
 		mailbox: utils.NewMailbox(1),
 		taskFn:  taskFn,

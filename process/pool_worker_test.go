@@ -20,7 +20,7 @@ func TestPoolWorker(t *testing.T) {
 		item[1].retry = true
 
 		w := process.NewPoolWorker("", 2, process.NewStaticScheduler(100*time.Millisecond, 2*time.Second))
-		err := w.Start(nil)
+		err := process.Start(w, "tester")
 		require.NoError(t, err)
 		defer w.Close()
 

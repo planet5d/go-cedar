@@ -23,7 +23,6 @@ type Pool struct {
 
 func NewPool(name string, concurrency int, retryInterval time.Duration) *Pool {
 	return &Pool{
-		Process:        *New(name),
 		itemsAvailable: utils.NewMailbox(1000),
 		chItems:        make(chan PoolUniqueID),
 		sem:            semaphore.NewWeighted(int64(concurrency)),

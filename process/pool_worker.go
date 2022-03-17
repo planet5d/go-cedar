@@ -24,6 +24,7 @@ type PoolWorkerScheduler interface {
 
 type poolWorker struct {
 	Process
+	name        string
 	concurrency int
 	pool        *Pool
 	scheduler   PoolWorkerScheduler
@@ -31,7 +32,7 @@ type poolWorker struct {
 
 func NewPoolWorker(name string, concurrency int, scheduler PoolWorkerScheduler) *poolWorker {
 	return &poolWorker{
-		Process:     *New(name),
+		name:        name,
 		concurrency: concurrency,
 		pool:        NewPool(name, concurrency, scheduler.CheckForRetriesInterval()),
 		scheduler:   scheduler,
@@ -39,7 +40,7 @@ func NewPoolWorker(name string, concurrency int, scheduler PoolWorkerScheduler) 
 }
 
 func (w *poolWorker) OnStart() error {
-	err := w.pool.Start(w)
+	err := w.StartChild(w.pool, "poolWorker")
 	if err != nil {
 		return err
 	}

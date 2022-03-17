@@ -3,8 +3,8 @@ package process
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -16,33 +16,30 @@ var _ Context = (*Process)(nil)
 
 // Errors
 var (
-	ErrUnstarted = errors.New("unstarted")
-	ErrClosed    = errors.New("closed")
+	ErrAlreadyStarted = errors.New("already started")
+	ErrUnstarted      = errors.New("unstarted")
+	ErrClosed         = errors.New("closed")
 )
 
 var gSpawnCounter = int64(0)
 
-func nextProcessName(baseName string) (string, int64) {
+func nextProcessLabel(baseLabel string) (string, int64) {
 	pid := atomic.AddInt64(&gSpawnCounter, 1)
-	return baseName + " #" + strconv.FormatInt(pid, 10), pid
+	return fmt.Sprint(baseLabel, " #", pid), pid
 }
 
-func (p *Process) ProcessInit(name string) {
+func (p *Process) ProcessReset(label string) {
 	*p = Process{}
-	p.name = name
 	p.state = Unstarted
+	p.label, p.id = nextProcessLabel(label)
+	p.chClosing = make(chan struct{})
+	p.chClosed = make(chan struct{})
+	p.Logger = log.NewLogger(p.label)
+	p.state = Started
 }
 
 func (p *Process) OnStart() error {
 	return nil // Intended for client override
-}
-
-func (p *Process) OnClosing() {
-	// Intended for client override
-}
-
-func (p *Process) OnClosed() {
-	// Intended for client override
 }
 
 func (p *Process) Close() {
@@ -52,13 +49,22 @@ func (p *Process) Close() {
 		p.state = Closing
 		close(p.chClosing)
 
-		// Callback while we wait for children
-		p.OnClosing()
+		// Fire callback if given
+		if p.OnClosing != nil {
+			p.OnClosing()
+			p.OnClosing = nil
+		}
 
 		// Wait for all children to close, then we proceed with completion.
 		p.running.Wait()
 		p.state = Closed
-		p.OnClosed()
+
+		// Fire callback if given
+		if p.OnClosed != nil {
+			p.OnClosed()
+			p.OnClosed = nil
+		}
+
 		close(p.chClosed)
 	})
 }
@@ -119,19 +125,8 @@ func (p *Process) ProcessID() int64 {
 	return p.id
 }
 
-func (p *Process) ProcessName() string {
-	return p.name
-}
-
-func (p *Process) start() {
-	if p.state != Unstarted {
-		panic("already started")
-	}
-	p.name, p.id = nextProcessName(p.name)
-	p.chClosing = make(chan struct{})
-	p.chClosed = make(chan struct{})
-	p.Logger = log.NewLogger(p.name)
-	p.state = Started
+func (p *Process) ProcessLabel() string {
+	return p.label
 }
 
 // Writes pretty debug state info of a given verbosity level.
@@ -158,7 +153,7 @@ func (p *Process) ExportProcessTree() map[string]interface{} {
 		children := make(map[string]interface{}, len(p.subs))
 		treeNode["children"] = children
 		for _, child := range p.subs {
-			children[child.ProcessName()] = child.ExportProcessTree()
+			children[child.ProcessLabel()] = child.ExportProcessTree()
 		}
 	}
 
@@ -171,67 +166,65 @@ func (p *Process) ChildCount() int {
 	return len(p.subs)
 }
 
-// Start() starts this Process as a child process to the given parent Context (if given).
-func (p *Process) Start(parent Context) error {
-	p.start()
+// StartChild starts the given child Context as a "sub" processs.
+func (p *Process) StartChild(child Context, label string) error {
+	child.ProcessReset(label)
 
-	// If a parent was given, add this Process as a child process
-	par, _ := parent.(*Process)
-	if par != nil {
-
-		if par.state != Started {
+	if p != nil {
+		if p.state != Started {
 			return ErrUnstarted
 		}
 
 		// add new child to parent
-		par.subsMu.Lock()
-		par.subs = append(par.subs, p)
-		par.subsMu.Unlock()
+		p.subsMu.Lock()
+		p.subs = append(p.subs, child)
+		p.subsMu.Unlock()
 
-		par.running.Add(1)
+		p.running.Add(1)
 		go func() {
 
 			// block until parent is closing or child has completed closing
 			select {
-			case <-par.Closing():
-				p.Close()
-			case <-p.Done():
+			case <-p.Closing():
+				child.Close()
+			case <-child.Closing():
 			}
 
+			<-child.Done()
+
 			// update the running count and remove the sub
-			par.running.Done()
-			par.subsMu.Lock()
+			p.running.Done()
+			p.subsMu.Lock()
 			{
-				N := len(par.subs)
+				N := len(p.subs)
 				for i := 0; i < N; i++ {
-					if par.subs[i] == p {
-						copy(par.subs[i:], par.subs[i+1:N])
+					if p.subs[i] == child {
+						copy(p.subs[i:], p.subs[i+1:N])
 						N--
-						par.subs[N] = nil // show GC some love
-						par.subs = par.subs[:N]
+						p.subs[N] = nil // show GC some love
+						p.subs = p.subs[:N]
 					}
 				}
 			}
-			par.subsMu.Unlock()
+			p.subsMu.Unlock()
 		}()
 	}
 
-	err := p.OnStart()
+	err := child.OnStart()
 	if err != nil {
-		p.Close()
+		child.Close()
 		return err
 	}
 
 	return nil
 }
 
-func (p *Process) Go(name string, fn func(ctx Context)) Context {
+func (p *Process) Go(label string, fn func(ctx Context)) (Context, error) {
 	child := &Process{}
-	child.ProcessInit(name)
 
-	err := child.Start(p)
+	err := p.StartChild(child, label)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	go func() {
@@ -239,7 +232,7 @@ func (p *Process) Go(name string, fn func(ctx Context)) Context {
 		child.Close()
 	}()
 
-	return child
+	return child, nil
 }
 
 func (p *Process) Closing() <-chan struct{} {
