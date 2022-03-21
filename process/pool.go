@@ -52,7 +52,7 @@ const (
 	poolItemState_InRetryPool
 )
 
-func (p *Pool) OnStart() error {
+func (p *Pool) OnContextStarted() error {
 	p.Process.Go("deliverAvailableItems", p.deliverAvailableItems)
 	p.Process.Go("handleItemsAwaitingRetry", p.handleItemsAwaitingRetry)
 	return nil

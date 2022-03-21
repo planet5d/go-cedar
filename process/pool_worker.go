@@ -39,7 +39,7 @@ func NewPoolWorker(name string, concurrency int, scheduler PoolWorkerScheduler) 
 	}
 }
 
-func (w *poolWorker) OnStart() error {
+func (w *poolWorker) OnContextStarted() error {
 	err := w.StartChild(w.pool, "poolWorker")
 	if err != nil {
 		return err

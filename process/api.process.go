@@ -49,34 +49,42 @@ func Start(child Context, label string) error {
 type Context interface {
 	log.Logger
 
-	// A process.Context can be used just like a context.Context, cowgirl.
+	// A process.Context can be used just like a context.Context.
 	context.Context
 
-	// ProcessReset is called when this context is to be overwritten / reset
-	ProcessReset(label string)
+	// OnContextInit is called when this context is to be overwritten / reset typically called by StartChild().
+	// This is called before this Context is running and intended to initialize state.
+	OnContextInit(label string) error
 
 	// A guaranteed unique label derived from the given label.
-	ProcessLabel() string
+	ContextLabel() string
 
 	// A guaranteed unique ID assigned after Start() is called.
-	ProcessID() int64
+	ContextID() int64
 
-	// Returns a tree reflecting the current state for debugging and diagnostics.
-	ExportProcessTree() map[string]interface{}
-
-	// Returns the number of children currently running (that are started or are closing),
-	// Since this count can change at any time, the caller must take precautions as needed.
-	ChildCount() int
-
-	// Calls child.ProcessReset() then adds the given Context as a child to this Process Context (assuming no error).
-	// If child.OnStart() returns an error, then child.Close() is called and the error is also returned.
-	// If parent == nil, this context is started with no parent (typical for "root" Contexts)
+	// Calls child.OnContextInit(), adds it as a child to this Context, and then calls child.OnContextStarted().
+	// If an error is encountered, then child.Close() is immediately called and the error is returned.
+	// Context implementations wishing to remain lightweight just use:
+	//    if err = child.OnContextInit(label); err != nil {
+	//        return err
+	//    }
+	//    if err = child.OnContextStarted(); err != nil {
+	//        return err
+	//    }
 	StartChild(child Context, label string) error
 
-	// Callback when this Context is started, called during StartChild().
-	// This is indended for override and is implemented by default as a stub.
+	// OnContextStarted is a callback once this Context is started, called at the end of StartChild().
+	// This method is indended for override and is where a Context typically starts child service Contexts.
 	// If an error is returned, Context.Close() is immediately called and the error is returned from StartChild().
-	OnStart() error
+	OnContextStarted() error
+	
+	// Returns a tree reflecting the current state for debugging and diagnostics.
+	ExportContextTree() map[string]interface{}
+
+	// Appends all currently open/active child Contexts to the given slice and returns the given slice.
+	// Naturally, the returned items are back-ward looking as any could close at any time.
+	// Context implementations wishing to remain lightweight may opt to not retain a list of children (and just return the given slice as-is).
+	GetChildren(in []Context) []Context 
 
 	// Convenience function for StartChild() that makes a new Process wrapper around the given fn and starts it.
 	// This newly started child Process is passed to the fn as well as returned for arbitrary access.

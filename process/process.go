@@ -28,7 +28,7 @@ func nextProcessLabel(baseLabel string) (string, int64) {
 	return fmt.Sprint(baseLabel, " #", pid), pid
 }
 
-func (p *Process) ProcessReset(label string) {
+func (p *Process) OnContextInit(label string) error {
 	*p = Process{}
 	p.state = Unstarted
 	p.label, p.id = nextProcessLabel(label)
@@ -36,9 +36,10 @@ func (p *Process) ProcessReset(label string) {
 	p.chClosed = make(chan struct{})
 	p.Logger = log.NewLogger(p.label)
 	p.state = Started
+	return nil
 }
 
-func (p *Process) OnStart() error {
+func (p *Process) OnContextStarted() error {
 	return nil // Intended for client override
 }
 
@@ -121,18 +122,18 @@ func (p *Process) Autoclose() {
 	}()
 }
 
-func (p *Process) ProcessID() int64 {
+func (p *Process) ContextID() int64 {
 	return p.id
 }
 
-func (p *Process) ProcessLabel() string {
+func (p *Process) ContextLabel() string {
 	return p.label
 }
 
 // Writes pretty debug state info of a given verbosity level.
 // If out == nil, the text output is instead directed to this context's logger.Info()
-func (p *Process) PrintProcessTree(out io.Writer, verboseLevel int32) {
-	tree := p.ExportProcessTree()
+func (p *Process) PrintContextTree(out io.Writer, verboseLevel int32) {
+	tree := p.ExportContextTree()
 	txt := utils.PrettyJSON(tree)
 
 	if out != nil {
@@ -142,7 +143,7 @@ func (p *Process) PrintProcessTree(out io.Writer, verboseLevel int32) {
 	}
 }
 
-func (p *Process) ExportProcessTree() map[string]interface{} {
+func (p *Process) ExportContextTree() map[string]interface{} {
 	p.subsMu.Lock()
 	defer p.subsMu.Unlock()
 
@@ -153,11 +154,17 @@ func (p *Process) ExportProcessTree() map[string]interface{} {
 		children := make(map[string]interface{}, len(p.subs))
 		treeNode["children"] = children
 		for _, child := range p.subs {
-			children[child.ProcessLabel()] = child.ExportProcessTree()
+			children[child.ContextLabel()] = child.ExportContextTree()
 		}
 	}
 
 	return treeNode
+}
+
+func (p *Process) GetChildren(in []Context) []Context {
+	p.subsMu.Lock()
+	defer p.subsMu.Unlock()
+	return append(in, p.subs...)
 }
 
 func (p *Process) ChildCount() int {
@@ -168,7 +175,10 @@ func (p *Process) ChildCount() int {
 
 // StartChild starts the given child Context as a "sub" processs.
 func (p *Process) StartChild(child Context, label string) error {
-	child.ProcessReset(label)
+	if err := child.OnContextInit(label); err != nil {
+		child.Close()
+		return err
+	}
 
 	if p != nil {
 		if p.state != Started {
@@ -210,7 +220,7 @@ func (p *Process) StartChild(child Context, label string) error {
 		}()
 	}
 
-	err := child.OnStart()
+	err := child.OnContextStarted()
 	if err != nil {
 		child.Close()
 		return err
